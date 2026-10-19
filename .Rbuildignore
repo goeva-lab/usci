@@ -1,0 +1,14 @@
+^air.toml$
+^jarl.toml$
+^.lintr.R$
+^_pkgdown.yml$
+
+^src/\.cargo$
+^src/rust/vendor$
+^src/rust/target$
+^src/Makevars$
+^src/Makevars\.win$
+
+^\.vscode$
+^\.github$
+^\.devcontainer$

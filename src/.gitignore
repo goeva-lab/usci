@@ -1,0 +1,13 @@
+*.o
+*.so
+*.dll
+
+Makevars
+Makevars.win
+
+.cargo
+rust/target
+rust/vendor
+rust/Cargo.lock
+rust/vendor-config.toml
+rust/vendor.tar.xz
