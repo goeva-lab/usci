@@ -1,0 +1,21 @@
+[package]
+name = "usci"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+name = "usci"
+
+[[bin]]
+name = "document"
+path = "document.rs"
+
+[dependencies]
+extendr-api = "^0.9"
+rayon = "^1.12"
+rstar = "^0.13"
+
+[profile.release]
+lto = true
+codegen-units = 1

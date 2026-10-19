@@ -1,0 +1,178 @@
+use extendr_api::prelude::*;
+use rayon::prelude::*;
+use rstar::{RTree, primitives::GeomWithData};
+
+struct IndexWIdx(RTree<GeomWithData<[f64; 2], usize>>);
+
+#[extendr]
+fn build_index_seq(x: Doubles, y: Doubles) -> ExternalPtr<IndexWIdx> {
+    ExternalPtr::new(IndexWIdx(rstar::RTree::bulk_load(
+        x.iter()
+            .zip(y.iter())
+            .enumerate()
+            .map(|(i, (x, y))| GeomWithData::new([x.0, y.0], i))
+            .collect(),
+    )))
+}
+
+#[inline(always)]
+fn calc(a_i: f64, a_j: f64, a_c: (f64, f64), b_c: (f64, f64), s: f64) -> (f64, f64) {
+    let dist_x = a_c.0 - b_c.0;
+    let dist_y = a_c.1 - b_c.1;
+    let dist = ((dist_x * dist_x) + (dist_y * dist_y)).sqrt();
+    let w = (-dist / s).exp();
+
+    (w * a_i * a_j, w)
+}
+
+#[inline(always)]
+fn val_vec(e: &Doubles, x: &Doubles, y: &Doubles, err: &'static str) -> Result<(), String> {
+    if (e.len() != x.len()) || (e.len() != y.len()) {
+        return Err(err.to_string());
+    }
+
+    Ok(())
+}
+
+#[inline(always)]
+fn val_idx(b: &Doubles, b_index: &IndexWIdx, scale_fact: &f64, err: &f64) -> Result<f64, String> {
+    if b.len() != b_index.0.size() {
+        return Err("b and b_index must have the length".to_string());
+    }
+
+    let rad = -err.ln() * scale_fact;
+    let radp2 = (rad * rad).min(f64::MAX); // gracefully deal w/ NaNs by just setting radius to f64 maximum
+
+    Ok(radp2)
+}
+
+#[extendr]
+fn eop_seq(
+    a: Doubles,
+    b: Doubles,
+    a_x: Doubles,
+    a_y: Doubles,
+    b_x: Doubles,
+    b_y: Doubles,
+    scale_fact: f64,
+) -> Result<[f64; 2], String> {
+    val_vec(&a, &a_x, &a_y, "a, a_x, and a_y must have the same length")?;
+    val_vec(&b, &b_x, &b_y, "b, b_x, and b_y must have the same length")?;
+
+    Ok(a.iter()
+        .zip(a_x.iter())
+        .zip(a_y.iter())
+        .fold([0., 0.], |[o_c, o_w], ((a_i, a_x), a_y)| {
+            b.iter().zip(b_x.iter()).zip(b_y.iter()).fold(
+                [o_c, o_w],
+                |[o_c, o_w], ((b_j, b_x), b_y)| {
+                    let (c, w) = calc(a_i.0, b_j.0, (a_x.0, a_y.0), (b_x.0, b_y.0), scale_fact);
+
+                    [o_c + c, o_w + w]
+                },
+            )
+        }))
+}
+
+#[extendr]
+fn eop_par(
+    a: Doubles,
+    b: Doubles,
+    a_x: Doubles,
+    a_y: Doubles,
+    b_x: Doubles,
+    b_y: Doubles,
+    scale_fact: f64,
+) -> Result<[f64; 2], String> {
+    val_vec(&a, &a_x, &a_y, "a, a_x, and a_y must have the same length")?;
+    val_vec(&b, &b_x, &b_y, "b, b_x, and b_y must have the same length")?;
+
+    let (b, b_x, b_y) = (&b[..], &b_x[..], &b_y[..]);
+
+    Ok(a.par_iter()
+        .zip(a_x.par_iter())
+        .zip(a_y.par_iter())
+        .map(|((a_i, a_x), a_y)| {
+            b.iter().zip(b_x.iter()).zip(b_y.iter()).fold(
+                [0., 0.],
+                |[o_c, o_w], ((b_j, b_x), b_y)| {
+                    let (c, w) = calc(a_i.0, b_j.0, (a_x.0, a_y.0), (b_x.0, b_y.0), scale_fact);
+
+                    [o_c + c, o_w + w]
+                },
+            )
+        })
+        .reduce(|| [0., 0.], |[a1, a2], [c1, c2]| [a1 + c1, a2 + c2]))
+}
+
+#[extendr]
+fn eopi_seq(
+    a: Doubles,
+    b: Doubles,
+    a_x: Doubles,
+    a_y: Doubles,
+    b_index: ExternalPtr<IndexWIdx>,
+    scale_fact: f64,
+    #[extendr(default = "1e-8")] err: f64,
+) -> Result<[f64; 2], String> {
+    val_vec(&a, &a_x, &a_y, "a, a_x, and a_y must have the same length")?;
+    let b_index = b_index.as_ref();
+    let radp2 = val_idx(&b, b_index, &scale_fact, &err)?;
+
+    Ok(a.iter()
+        .zip(a_x.iter())
+        .zip(a_y.iter())
+        .fold([0., 0.], |[o_c, o_w], ((a_i, a_x), a_y)| {
+            b_index
+                .0
+                .locate_within_distance([a_x.0, a_y.0], radp2)
+                .fold([o_c, o_w], |[o_c, o_w], g_y| {
+                    let &[b_x, b_y] = g_y.geom();
+                    let (c, w) = calc(a_i.0, b[g_y.data].0, (a_x.0, a_y.0), (b_x, b_y), scale_fact);
+
+                    [o_c + c, o_w + w]
+                })
+        }))
+}
+
+#[extendr]
+fn eopi_par(
+    a: Doubles,
+    b: Doubles,
+    a_x: Doubles,
+    a_y: Doubles,
+    b_index: ExternalPtr<IndexWIdx>,
+    scale_fact: f64,
+    #[extendr(default = "1e-8")] err: f64,
+) -> Result<[f64; 2], String> {
+    val_vec(&a, &a_x, &a_y, "a, a_x, and a_y must have the same length")?;
+    let b_index = b_index.as_ref();
+    let radp2 = val_idx(&b, b_index, &scale_fact, &err)?;
+
+    let b = &b[..];
+
+    Ok(a.par_iter()
+        .zip(a_x.par_iter())
+        .zip(a_y.par_iter())
+        .map(|((a_i, a_x), a_y)| {
+            b_index
+                .0
+                .locate_within_distance([a_x.0, a_y.0], radp2)
+                .fold([0., 0.], |[o_c, o_w], g_y| {
+                    let &[b_x, b_y] = g_y.geom();
+                    let (c, w) = calc(a_i.0, b[g_y.data].0, (a_x.0, a_y.0), (b_x, b_y), scale_fact);
+
+                    [o_c + c, o_w + w]
+                })
+        })
+        .reduce(|| [0., 0.], |[a1, a2], [c1, c2]| [a1 + c1, a2 + c2]))
+}
+
+extendr_module! {
+    mod usci;
+    fn eop_seq;
+    fn eop_par;
+    fn eopi_seq;
+    fn eopi_par;
+    fn build_index_seq;
+}

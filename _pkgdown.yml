@@ -1,0 +1,8 @@
+template:
+  bootstrap: 5
+  light-switch: true
+  math-rendering: 'katex'
+repo:
+  url:
+    source: 'https://github.com/goeva-lab/usci/tree/main'
+    home: 'https://github.com/goeva-lab/usci'
